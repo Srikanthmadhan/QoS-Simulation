@@ -1,0 +1,889 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>QoS Engine — Network Traffic Prioritization</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400&family=IBM+Plex+Sans:wght@300;400;500&display=swap" rel="stylesheet" />
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+
+<style>
+/* ── RESET & ROOT ─────────────────────────── */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg:        #080808;
+  --surface:   #0f0f0f;
+  --surface2:  #141414;
+  --border:    #1e1e1e;
+  --border2:   #2a2a2a;
+  --text:      #d8d8d8;
+  --muted:     #4a4a4a;
+  --dim:       #666666;
+  --accent:    #ffffff;
+  --mono:      'IBM Plex Mono', monospace;
+  --sans:      'IBM Plex Sans', sans-serif;
+  --radius:    2px;
+  --P1: #ffffff; --P2: #b8b8b8; --P3: #7a7a7a;
+  --P4: #4e4e4e; --P5: #303030; --P6: #1c1c1c;
+}
+
+html { scroll-behavior: smooth; }
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--sans);
+  font-size: 14px;
+  line-height: 1.6;
+  min-height: 100vh;
+  overflow-x: hidden;
+}
+
+/* ── SCROLLBAR ──────────────────────────── */
+::-webkit-scrollbar { width: 4px; height: 4px; }
+::-webkit-scrollbar-track { background: var(--bg); }
+::-webkit-scrollbar-thumb { background: var(--border2); }
+
+/* ── LAYOUT ─────────────────────────────── */
+.shell {
+  display: grid;
+  grid-template-columns: 280px 1fr;
+  grid-template-rows: 56px 1fr;
+  grid-template-areas:
+    "topbar topbar"
+    "sidebar main";
+  min-height: 100vh;
+}
+
+/* ── TOPBAR ──────────────────────────────── */
+.topbar {
+  grid-area: topbar;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 2rem;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  position: sticky; top: 0; z-index: 100;
+}
+.topbar-brand {
+  display: flex; align-items: center; gap: 0.75rem;
+}
+.topbar-logo {
+  font-family: var(--mono);
+  font-size: 1.1rem;
+  font-weight: 700;
+  color: var(--accent);
+  letter-spacing: -0.04em;
+}
+.topbar-sub {
+  font-family: var(--mono);
+  font-size: 0.6rem;
+  color: var(--muted);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  border-left: 1px solid var(--border2);
+  padding-left: 0.75rem;
+}
+.topbar-status {
+  display: flex; align-items: center; gap: 0.5rem;
+  font-family: var(--mono); font-size: 0.65rem;
+  color: var(--muted); letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.status-dot {
+  width: 7px; height: 7px; border-radius: 50%;
+  background: var(--border2);
+  transition: background 0.3s, box-shadow 0.3s;
+}
+.status-dot.idle   { background: var(--border2); }
+.status-dot.run    { background: #fff; box-shadow: 0 0 8px #fff4; animation: pulse 1s ease-in-out infinite; }
+.status-dot.done   { background: #a8e6a8; }
+@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
+
+/* ── SIDEBAR ──────────────────────────────── */
+.sidebar {
+  grid-area: sidebar;
+  background: var(--surface);
+  border-right: 1px solid var(--border);
+  padding: 1.5rem 1.25rem;
+  display: flex; flex-direction: column; gap: 1.5rem;
+  overflow-y: auto;
+  position: sticky; top: 56px; height: calc(100vh - 56px);
+}
+
+.section-label {
+  font-family: var(--mono); font-size: 0.58rem;
+  letter-spacing: 0.18em; text-transform: uppercase;
+  color: var(--muted); padding-bottom: 0.5rem;
+  border-bottom: 1px solid var(--border);
+}
+
+/* ── FORM ELEMENTS ───────────────────────── */
+.field { display: flex; flex-direction: column; gap: 0.3rem; }
+.field label {
+  font-family: var(--mono); font-size: 0.63rem;
+  letter-spacing: 0.08em; text-transform: uppercase; color: var(--dim);
+}
+.field select, .field input[type="number"] {
+  background: var(--surface2); border: 1px solid var(--border2);
+  color: var(--text); font-family: var(--mono); font-size: 0.78rem;
+  padding: 0.45rem 0.6rem; border-radius: var(--radius);
+  outline: none; appearance: none;
+  transition: border-color 0.15s;
+}
+.field select:focus, .field input[type="number"]:focus {
+  border-color: var(--dim);
+}
+.field select option { background: var(--surface2); }
+
+/* Range slider */
+.range-wrap { display: flex; flex-direction: column; gap: 0.3rem; }
+.range-head { display: flex; justify-content: space-between; align-items: baseline; }
+.range-head label {
+  font-family: var(--mono); font-size: 0.63rem;
+  letter-spacing: 0.08em; text-transform: uppercase; color: var(--dim);
+}
+.range-val {
+  font-family: var(--mono); font-size: 0.72rem; font-weight: 600; color: var(--accent);
+}
+input[type="range"] {
+  width: 100%; appearance: none;
+  background: transparent; cursor: pointer;
+}
+input[type="range"]::-webkit-slider-runnable-track {
+  height: 2px; background: var(--border2); border-radius: 0;
+}
+input[type="range"]::-webkit-slider-thumb {
+  appearance: none; width: 12px; height: 12px;
+  background: var(--accent); border-radius: 50%;
+  margin-top: -5px; transition: transform 0.1s;
+}
+input[type="range"]::-webkit-slider-thumb:hover { transform: scale(1.3); }
+
+/* Checkboxes */
+.check-list { display: flex; flex-direction: column; gap: 0.35rem; }
+.check-item {
+  display: flex; align-items: center; gap: 0.55rem;
+  cursor: pointer; padding: 0.3rem 0.4rem;
+  border-radius: var(--radius); transition: background 0.1s;
+}
+.check-item:hover { background: var(--surface2); }
+.check-item input[type="checkbox"] { display: none; }
+.check-box {
+  width: 14px; height: 14px; border: 1px solid var(--border2);
+  border-radius: 1px; display: grid; place-items: center;
+  flex-shrink: 0; transition: background 0.15s, border-color 0.15s;
+}
+.check-item input:checked ~ .check-box {
+  background: var(--accent); border-color: var(--accent);
+}
+.check-box::after {
+  content: ""; width: 5px; height: 3px;
+  border-left: 1.5px solid var(--bg); border-bottom: 1.5px solid var(--bg);
+  transform: rotate(-45deg) translateY(-1px); opacity: 0;
+  transition: opacity 0.1s;
+}
+.check-item input:checked ~ .check-box::after { opacity: 1; }
+.check-label {
+  font-family: var(--mono); font-size: 0.7rem; color: var(--text);
+  display: flex; align-items: center; gap: 0.4rem;
+}
+.p-badge {
+  font-size: 0.55rem; color: var(--muted);
+  border: 1px solid var(--border); padding: 0 4px;
+  border-radius: 1px; letter-spacing: 0.06em;
+}
+
+/* Run Button */
+.btn-run {
+  width: 100%; padding: 0.7rem 1rem;
+  background: var(--accent); color: var(--bg);
+  border: none; border-radius: var(--radius);
+  font-family: var(--mono); font-weight: 700;
+  font-size: 0.75rem; letter-spacing: 0.12em;
+  text-transform: uppercase; cursor: pointer;
+  transition: background 0.15s, transform 0.1s;
+  display: flex; align-items: center; justify-content: center; gap: 0.5rem;
+}
+.btn-run:hover:not(:disabled) { background: #d8d8d8; }
+.btn-run:active:not(:disabled) { transform: scale(0.98); }
+.btn-run:disabled { background: var(--border2); color: var(--muted); cursor: not-allowed; }
+
+/* ── MAIN AREA ───────────────────────────── */
+.main { grid-area: main; padding: 2rem; display: flex; flex-direction: column; gap: 2rem; overflow-y: auto; }
+
+/* ── KPI GRID ────────────────────────────── */
+.kpi-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 1px; background: var(--border); border: 1px solid var(--border); }
+.kpi-card {
+  background: var(--surface);
+  padding: 1.25rem 1rem;
+}
+.kpi-label {
+  font-family: var(--mono); font-size: 0.58rem;
+  letter-spacing: 0.14em; text-transform: uppercase;
+  color: var(--muted); margin-bottom: 0.4rem;
+}
+.kpi-value {
+  font-family: var(--mono); font-size: 1.6rem;
+  font-weight: 700; color: var(--accent); line-height: 1;
+}
+.kpi-sub { font-family: var(--mono); font-size: 0.6rem; color: var(--muted); margin-top: 0.3rem; }
+.kpi-delta { font-size: 0.65rem; margin-top: 0.2rem; }
+.kpi-delta.bad { color: #ff8888; }
+.kpi-delta.good { color: #88cc88; }
+
+/* ── TABS ────────────────────────────────── */
+.tabs-bar {
+  display: flex; gap: 0; border-bottom: 1px solid var(--border);
+}
+.tab-btn {
+  font-family: var(--mono); font-size: 0.65rem;
+  letter-spacing: 0.1em; text-transform: uppercase;
+  color: var(--muted); background: none; border: none;
+  border-bottom: 2px solid transparent; padding: 0.7rem 1.2rem;
+  cursor: pointer; transition: color 0.15s, border-color 0.15s;
+  margin-bottom: -1px;
+}
+.tab-btn:hover { color: var(--dim); }
+.tab-btn.active { color: var(--accent); border-bottom-color: var(--accent); }
+.tab-panel { display: none; }
+.tab-panel.active { display: block; }
+
+/* ── CHARTS ──────────────────────────────── */
+.chart-grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
+.chart-box {
+  background: var(--surface); border: 1px solid var(--border);
+  padding: 1.25rem;
+}
+.chart-title {
+  font-family: var(--mono); font-size: 0.6rem;
+  letter-spacing: 0.12em; text-transform: uppercase;
+  color: var(--muted); margin-bottom: 1rem;
+}
+canvas { max-height: 240px; }
+
+/* ── TABLE ───────────────────────────────── */
+.tbl-wrap { overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; }
+thead tr { border-bottom: 1px solid var(--border2); }
+th {
+  font-family: var(--mono); font-size: 0.58rem;
+  letter-spacing: 0.12em; text-transform: uppercase;
+  color: var(--muted); padding: 0.6rem 0.8rem; text-align: left;
+  font-weight: 400;
+}
+td {
+  font-family: var(--mono); font-size: 0.72rem;
+  color: var(--text); padding: 0.55rem 0.8rem;
+  border-bottom: 1px solid var(--border);
+}
+tbody tr:hover td { background: var(--surface2); }
+.sla-ok  { color: #88cc88; }
+.sla-bad { color: #ff8888; }
+.pri-dot {
+  display: inline-block; width: 8px; height: 8px;
+  border-radius: 50%; margin-right: 6px; vertical-align: middle;
+}
+
+/* ── TIMELINE ────────────────────────────── */
+.timeline-chart-box {
+  background: var(--surface); border: 1px solid var(--border); padding: 1.25rem;
+}
+#timelineCanvas { max-height: 300px; }
+
+/* ── EMPTY STATE ─────────────────────────── */
+.empty-state {
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  min-height: 300px; gap: 1rem; color: var(--border2);
+}
+.empty-icon { font-size: 3rem; }
+.empty-text { font-family: var(--mono); font-size: 0.7rem; letter-spacing: 0.1em; text-transform: uppercase; }
+
+/* ── PROGRESS BAR ────────────────────────── */
+.progress-bar-wrap {
+  width: 100%; height: 2px; background: var(--border);
+  margin-bottom: 1.5rem; display: none;
+}
+.progress-bar-fill {
+  height: 100%; background: var(--accent);
+  width: 0%; transition: width 0.3s linear;
+  animation: prog-glow 1s ease-in-out infinite alternate;
+}
+@keyframes prog-glow { from { opacity: 0.6 } to { opacity: 1 } }
+
+/* ── ALGO NOTE ───────────────────────────── */
+.algo-note {
+  background: var(--surface); border: 1px solid var(--border);
+  border-left: 3px solid var(--border2);
+  padding: 1rem 1.25rem; font-family: var(--mono); font-size: 0.7rem;
+  color: var(--dim); line-height: 1.8;
+}
+.algo-note strong { color: var(--text); }
+
+/* ── DSCP TABLE ──────────────────────────── */
+.dscp-grid {
+  display: grid; grid-template-columns: repeat(3, 1fr); gap: 1px;
+  background: var(--border); border: 1px solid var(--border);
+}
+.dscp-cell {
+  background: var(--surface); padding: 0.6rem 0.8rem;
+}
+.dscp-code { font-family: var(--mono); font-size: 0.75rem; font-weight: 600; color: var(--accent); }
+.dscp-desc { font-family: var(--mono); font-size: 0.6rem; color: var(--muted); margin-top: 2px; }
+
+/* ── FOOTER ──────────────────────────────── */
+footer {
+  margin-top: auto; padding-top: 1rem; border-top: 1px solid var(--border);
+  display: flex; justify-content: space-between;
+  font-family: var(--mono); font-size: 0.58rem; color: var(--border2);
+}
+
+/* ── ANIM ────────────────────────────────── */
+@keyframes fadeIn { from{opacity:0;transform:translateY(8px)} to{opacity:1;transform:translateY(0)} }
+.fade-in { animation: fadeIn 0.35s ease forwards; }
+</style>
+</head>
+<body>
+
+<div class="shell">
+
+  <!-- ── TOPBAR ── -->
+  <header class="topbar">
+    <div class="topbar-brand">
+      <span class="topbar-logo">QoS Engine</span>
+      <span class="topbar-sub">Adaptive Network Traffic Prioritization</span>
+    </div>
+    <div class="topbar-status">
+      <div class="status-dot idle" id="statusDot"></div>
+      <span id="statusText">Idle</span>
+    </div>
+  </header>
+
+  <!-- ── SIDEBAR ── -->
+  <aside class="sidebar">
+    <div>
+      <div class="section-label">// Scheduler</div>
+      <div class="field" style="margin-top:0.75rem;">
+        <label>Algorithm</label>
+        <select id="algorithm">
+          <option value="PQ">PQ — Priority Queueing</option>
+          <option value="WFQ">WFQ — Weighted Fair Queueing</option>
+          <option value="DRR">DRR — Deficit Round Robin</option>
+          <option value="FIFO">FIFO — Best Effort</option>
+        </select>
+      </div>
+    </div>
+
+    <div>
+      <div class="section-label">// Network Parameters</div>
+      <div style="display:flex; flex-direction:column; gap:0.9rem; margin-top:0.75rem;">
+        <div class="range-wrap">
+          <div class="range-head">
+            <label>Bandwidth</label>
+            <span class="range-val" id="bwVal">10 Mbps</span>
+          </div>
+          <input type="range" id="bandwidth" min="1" max="100" value="10" step="1" />
+        </div>
+        <div class="range-wrap">
+          <div class="range-head">
+            <label>Duration</label>
+            <span class="range-val" id="durVal">8 s</span>
+          </div>
+          <input type="range" id="duration" min="2" max="20" value="8" step="1" />
+        </div>
+        <div class="range-wrap">
+          <div class="range-head">
+            <label>Packets / Sec</label>
+            <span class="range-val" id="ppsVal">60</span>
+          </div>
+          <input type="range" id="pps" min="10" max="200" value="60" step="5" />
+        </div>
+        <div class="range-wrap">
+          <div class="range-head">
+            <label>Queue Buffer</label>
+            <span class="range-val" id="qVal">100</span>
+          </div>
+          <input type="range" id="queue_size" min="20" max="500" value="100" step="10" />
+        </div>
+      </div>
+    </div>
+
+    <div>
+      <div class="section-label">// Traffic Classes</div>
+      <div class="check-list" id="classList" style="margin-top:0.75rem;"></div>
+    </div>
+
+    <button class="btn-run" id="runBtn" onclick="runSimulation()">
+      <span id="runIcon">▶</span>
+      <span id="runLabel">Run Simulation</span>
+    </button>
+
+    <div style="margin-top:auto;">
+      <div class="algo-note" id="algoNote"></div>
+    </div>
+  </aside>
+
+  <!-- ── MAIN ── -->
+  <main class="main">
+
+    <div class="progress-bar-wrap" id="progressWrap">
+      <div class="progress-bar-fill" id="progressFill"></div>
+    </div>
+
+    <!-- KPI Row -->
+    <div class="kpi-grid" id="kpiGrid">
+      <div class="kpi-card">
+        <div class="kpi-label">Packets Sent</div>
+        <div class="kpi-value" id="kpiSent">—</div>
+        <div class="kpi-sub">total processed</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-label">Packets Dropped</div>
+        <div class="kpi-value" id="kpiDropped">—</div>
+        <div class="kpi-sub kpi-delta" id="kpiDropDelta"></div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-label">Avg Latency</div>
+        <div class="kpi-value" id="kpiLatency">—</div>
+        <div class="kpi-sub">milliseconds</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-label">Throughput</div>
+        <div class="kpi-value" id="kpiThru">—</div>
+        <div class="kpi-sub">Mbps</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-label">Drop Rate</div>
+        <div class="kpi-value" id="kpiDrop">—</div>
+        <div class="kpi-sub">% of all packets</div>
+      </div>
+    </div>
+
+    <!-- Tabs -->
+    <div>
+      <div class="tabs-bar">
+        <button class="tab-btn active" onclick="switchTab('latency', this)">Latency</button>
+        <button class="tab-btn" onclick="switchTab('timeline', this)">Timeline</button>
+        <button class="tab-btn" onclick="switchTab('throughput', this)">Throughput</button>
+        <button class="tab-btn" onclick="switchTab('table', this)">Per-Class</button>
+        <button class="tab-btn" onclick="switchTab('dscp', this)">DSCP</button>
+      </div>
+
+      <!-- LATENCY TAB -->
+      <div class="tab-panel active" id="tab-latency" style="margin-top:1rem;">
+        <div class="chart-grid-2">
+          <div class="chart-box">
+            <div class="chart-title">Average Latency by Class (ms)</div>
+            <canvas id="latencyChart"></canvas>
+          </div>
+          <div class="chart-box">
+            <div class="chart-title">Min / Avg / Max Latency (ms)</div>
+            <canvas id="latencyRangeChart"></canvas>
+          </div>
+        </div>
+      </div>
+
+      <!-- TIMELINE TAB -->
+      <div class="tab-panel" id="tab-timeline" style="margin-top:1rem;">
+        <div class="timeline-chart-box">
+          <div class="chart-title">Latency over Time (ms)</div>
+          <canvas id="timelineCanvas"></canvas>
+        </div>
+      </div>
+
+      <!-- THROUGHPUT TAB -->
+      <div class="tab-panel" id="tab-throughput" style="margin-top:1rem;">
+        <div class="chart-grid-2">
+          <div class="chart-box">
+            <div class="chart-title">Bytes Transmitted by Class (KB)</div>
+            <canvas id="throughputChart"></canvas>
+          </div>
+          <div class="chart-box">
+            <div class="chart-title">SLA Compliance (%)</div>
+            <canvas id="slaChart"></canvas>
+          </div>
+        </div>
+      </div>
+
+      <!-- TABLE TAB -->
+      <div class="tab-panel" id="tab-table" style="margin-top:1rem;">
+        <div class="chart-box" style="padding:0;">
+          <div class="tbl-wrap">
+            <table id="statsTable">
+              <thead>
+                <tr>
+                  <th>Class</th><th>Pri</th><th>DSCP</th>
+                  <th>Sent</th><th>Dropped</th>
+                  <th>Avg (ms)</th><th>Min (ms)</th><th>Max (ms)</th>
+                  <th>KB Sent</th><th>SLA</th>
+                </tr>
+              </thead>
+              <tbody id="statsBody">
+                <tr><td colspan="10" style="text-align:center; color:var(--muted); padding:2rem;">
+                  Run a simulation to see results.
+                </td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- DSCP TAB -->
+      <div class="tab-panel" id="tab-dscp" style="margin-top:1rem;">
+        <div class="dscp-grid">
+          <div class="dscp-cell"><div class="dscp-code">EF</div><div class="dscp-desc">Expedited Forwarding · DSCP 46 · &lt;10ms</div></div>
+          <div class="dscp-cell"><div class="dscp-code">AF41</div><div class="dscp-desc">Assured Forwarding 4-1 · DSCP 34 · &lt;50ms</div></div>
+          <div class="dscp-cell"><div class="dscp-code">AF21</div><div class="dscp-desc">Assured Forwarding 2-1 · DSCP 18 · &lt;100ms</div></div>
+          <div class="dscp-cell"><div class="dscp-code">CS1</div><div class="dscp-desc">Class Selector 1 · DSCP 8 · &lt;200ms</div></div>
+          <div class="dscp-cell"><div class="dscp-code">BE</div><div class="dscp-desc">Best Effort · DSCP 0 · No Guarantee</div></div>
+          <div class="dscp-cell"><div class="dscp-code">802.1p</div><div class="dscp-desc">Layer 2 CoS marking (IEEE 802.1Q)</div></div>
+        </div>
+        <div style="margin-top:1rem;" class="algo-note">
+          <strong>QoS Standards Reference</strong><br>
+          RFC 2474 — Definition of the DS Field in IPv4/IPv6 Headers<br>
+          RFC 2475 — Architecture for Differentiated Services<br>
+          RFC 3246 — Expedited Forwarding PHB<br>
+          RFC 2597 — Assured Forwarding PHB Group<br>
+          IEEE 802.1p — Traffic Class Expediting
+        </div>
+      </div>
+
+    </div><!-- /tabs -->
+
+    <footer>
+      <span>QoS Engine · Next-Gen Network Simulator</span>
+      <span>Flask + Vanilla JS · RFC 2474 · IEEE 802.1p</span>
+    </footer>
+
+  </main>
+</div>
+
+<script>
+// ── CONSTANTS ──────────────────────────────
+const CLASS_COLORS = {
+  "Video Call":    "#ffffff",
+  "VoIP":          "#c0c0c0",
+  "Gaming":        "#909090",
+  "Web Browsing":  "#636363",
+  "Email":         "#404040",
+  "File Download": "#222222",
+};
+const CLASS_ICONS = {
+  "Video Call":"◈","VoIP":"◉","Gaming":"◆",
+  "Web Browsing":"◇","Email":"○","File Download":"□"
+};
+
+const ALGO_NOTES = {
+  PQ:   "<strong>Priority Queueing (PQ)</strong> — Strict priority. High-priority queues are always served first. Low-priority traffic may starve under heavy load. Optimal for latency-critical flows like VoIP.",
+  WFQ:  "<strong>Weighted Fair Queueing (WFQ)</strong> — Each class receives bandwidth proportional to its weight. Prevents starvation while still favouring high-priority flows. RFC 2205.",
+  DRR:  "<strong>Deficit Round Robin (DRR)</strong> — Credit-based round-robin. Unused credits carry over between rounds, providing fair bandwidth with O(1) complexity (Shreedhar & Varghese, 1996).",
+  FIFO: "<strong>FIFO / Best Effort</strong> — No prioritisation. Packets served in arrival order. Run this first to see why QoS matters in congested networks.",
+};
+
+// ── CHART INSTANCES ────────────────────────
+let charts = {};
+
+const CHART_DEFAULTS = {
+  responsive: true, maintainAspectRatio: true,
+  plugins: {
+    legend: {
+      labels: { font: { family: "'IBM Plex Mono'", size: 10 }, color: "#555", boxWidth: 10 }
+    }
+  },
+  scales: {
+    x: {
+      ticks: { font: { family: "'IBM Plex Mono'", size: 9 }, color: "#444" },
+      grid: { color: "#141414" },
+    },
+    y: {
+      ticks: { font: { family: "'IBM Plex Mono'", size: 9 }, color: "#444" },
+      grid: { color: "#141414" },
+    }
+  }
+};
+
+// ── INIT ───────────────────────────────────
+document.addEventListener("DOMContentLoaded", async () => {
+  bindSlider("bandwidth", "bwVal", v => v + " Mbps");
+  bindSlider("duration",  "durVal", v => v + " s");
+  bindSlider("pps",       "ppsVal", v => v);
+  bindSlider("queue_size","qVal",   v => v);
+
+  updateAlgoNote();
+  document.getElementById("algorithm").addEventListener("change", updateAlgoNote);
+
+  try {
+    const resp = await fetch("/api/traffic-classes");
+    const data = await resp.json();
+    buildClassList(data);
+  } catch(e) {
+    buildClassList(null);
+  }
+
+  initCharts();
+});
+
+function bindSlider(id, valId, fmt) {
+  const el = document.getElementById(id);
+  const out = document.getElementById(valId);
+  out.textContent = fmt(el.value);
+  el.addEventListener("input", () => out.textContent = fmt(el.value));
+}
+
+function updateAlgoNote() {
+  const alg = document.getElementById("algorithm").value;
+  document.getElementById("algoNote").innerHTML = ALGO_NOTES[alg] || "";
+}
+
+function buildClassList(data) {
+  const container = document.getElementById("classList");
+  const classes = data ? Object.entries(data) : Object.entries({
+    "Video Call":{"priority":1,"dscp":"EF"},
+    "VoIP":{"priority":2,"dscp":"EF"},
+    "Gaming":{"priority":3,"dscp":"AF41"},
+    "Web Browsing":{"priority":4,"dscp":"AF21"},
+    "Email":{"priority":5,"dscp":"CS1"},
+    "File Download":{"priority":6,"dscp":"BE"},
+  });
+  classes.sort((a,b) => a[1].priority - b[1].priority);
+  container.innerHTML = "";
+  classes.forEach(([cls, info]) => {
+    const icon = CLASS_ICONS[cls] || "●";
+    const color = CLASS_COLORS[cls] || "#888";
+    const html = `
+      <label class="check-item">
+        <input type="checkbox" value="${cls}" checked />
+        <div class="check-box"></div>
+        <span class="check-label">
+          <span style="color:${color};">${icon}</span>
+          ${cls}
+          <span class="p-badge">P${info.priority}</span>
+        </span>
+      </label>`;
+    container.insertAdjacentHTML("beforeend", html);
+  });
+}
+
+function initCharts() {
+  const ctx = id => document.getElementById(id).getContext("2d");
+  const base = { ...CHART_DEFAULTS };
+
+  charts.latency = new Chart(ctx("latencyChart"), {
+    type: "bar",
+    data: { labels: [], datasets: [{ label: "Avg ms", data: [], backgroundColor: [], borderColor: "#000", borderWidth: 1 }] },
+    options: { ...base, plugins: { ...base.plugins, legend: { display: false } } }
+  });
+
+  charts.latencyRange = new Chart(ctx("latencyRangeChart"), {
+    type: "bar",
+    data: {
+      labels: [],
+      datasets: [
+        { label: "Min", data: [], backgroundColor: "#222", borderColor: "#000", borderWidth: 1 },
+        { label: "Avg", data: [], backgroundColor: "#888", borderColor: "#000", borderWidth: 1 },
+        { label: "Max", data: [], backgroundColor: "#ccc", borderColor: "#000", borderWidth: 1 },
+      ]
+    },
+    options: { ...base }
+  });
+
+  charts.timeline = new Chart(ctx("timelineCanvas"), {
+    type: "scatter",
+    data: { datasets: [] },
+    options: {
+      ...base,
+      scales: {
+        x: { ...base.scales.x, title: { display: true, text: "Time (s)", color: "#444", font: { family: "'IBM Plex Mono'", size: 9 } } },
+        y: { ...base.scales.y, title: { display: true, text: "Latency (ms)", color: "#444", font: { family: "'IBM Plex Mono'", size: 9 } } }
+      }
+    }
+  });
+
+  charts.throughput = new Chart(ctx("throughputChart"), {
+    type: "bar",
+    data: { labels: [], datasets: [{ label: "KB", data: [], backgroundColor: [], borderColor: "#000", borderWidth: 1 }] },
+    options: { ...base, plugins: { ...base.plugins, legend: { display: false } } }
+  });
+
+  charts.sla = new Chart(ctx("slaChart"), {
+    type: "bar",
+    data: {
+      labels: [],
+      datasets: [
+        { label: "SLA Met (%)", data: [], backgroundColor: "#cccccc", borderColor: "#000", borderWidth: 1 },
+        { label: "Violated (%)", data: [], backgroundColor: "#2a2a2a", borderColor: "#000", borderWidth: 1 },
+      ]
+    },
+    options: { ...base, scales: { ...base.scales, x: { ...base.scales.x, stacked: true }, y: { ...base.scales.y, stacked: true, max: 100 } } }
+  });
+}
+
+// ── RUN SIMULATION ─────────────────────────
+async function runSimulation() {
+  const activeClasses = [...document.querySelectorAll("#classList input:checked")].map(el => el.value);
+  if (!activeClasses.length) { alert("Select at least one traffic class."); return; }
+
+  setRunning(true);
+  startProgress(parseFloat(document.getElementById("duration").value));
+
+  const body = {
+    algorithm:     document.getElementById("algorithm").value,
+    bandwidth:     parseFloat(document.getElementById("bandwidth").value),
+    duration:      parseFloat(document.getElementById("duration").value),
+    pps:           parseInt(document.getElementById("pps").value),
+    queue_size:    parseInt(document.getElementById("queue_size").value),
+    active_classes: activeClasses,
+  };
+
+  try {
+    const resp = await fetch("/api/simulate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (!resp.ok) throw new Error("Server error: " + resp.status);
+    const data = await resp.json();
+    stopProgress();
+    renderResults(data);
+  } catch(e) {
+    stopProgress();
+    alert("Simulation failed: " + e.message);
+  } finally {
+    setRunning(false);
+  }
+}
+
+// ── PROGRESS ───────────────────────────────
+let progressInterval = null;
+function startProgress(duration) {
+  const wrap = document.getElementById("progressWrap");
+  const fill = document.getElementById("progressFill");
+  wrap.style.display = "block";
+  fill.style.width = "0%";
+  let elapsed = 0;
+  progressInterval = setInterval(() => {
+    elapsed += 0.25;
+    fill.style.width = Math.min(90, elapsed / duration * 100) + "%";
+  }, 250);
+}
+function stopProgress() {
+  clearInterval(progressInterval);
+  const fill = document.getElementById("progressFill");
+  fill.style.width = "100%";
+  setTimeout(() => { document.getElementById("progressWrap").style.display = "none"; }, 400);
+}
+
+// ── STATUS ─────────────────────────────────
+function setRunning(running) {
+  const dot = document.getElementById("statusDot");
+  const txt = document.getElementById("statusText");
+  const btn = document.getElementById("runBtn");
+  const icon = document.getElementById("runIcon");
+  const label = document.getElementById("runLabel");
+
+  dot.className = "status-dot " + (running ? "run" : "done");
+  txt.textContent = running ? "Simulating…" : "Complete";
+  btn.disabled = running;
+  icon.textContent = running ? "◌" : "▶";
+  label.textContent = running ? "Running…" : "Run Simulation";
+}
+
+// ── RENDER ─────────────────────────────────
+function renderResults(data) {
+  const { summary, stats, timeline, config } = data;
+
+  // KPIs
+  document.getElementById("kpiSent").textContent    = summary.total_sent.toLocaleString();
+  document.getElementById("kpiDropped").textContent = summary.total_dropped.toLocaleString();
+  document.getElementById("kpiLatency").textContent = summary.avg_latency.toFixed(1);
+  document.getElementById("kpiThru").textContent    = summary.throughput_mbps.toFixed(2);
+  document.getElementById("kpiDrop").textContent    = summary.drop_rate.toFixed(1) + "%";
+
+  const dropDelta = document.getElementById("kpiDropDelta");
+  if (summary.drop_rate > 5) {
+    dropDelta.textContent = "↑ High drop rate";
+    dropDelta.className = "kpi-sub kpi-delta bad";
+  } else {
+    dropDelta.textContent = "↓ Acceptable";
+    dropDelta.className = "kpi-sub kpi-delta good";
+  }
+
+  // Sort classes by priority
+  const sorted = Object.entries(stats).sort((a,b) => a[1].priority - b[1].priority);
+  const labels = sorted.map(([cls]) => cls.replace(" ", "\n"));
+  const colors = sorted.map(([cls]) => CLASS_COLORS[cls] || "#666");
+  const avgLats = sorted.map(([,s]) => s.avg_latency);
+  const minLats = sorted.map(([,s]) => s.min_latency);
+  const maxLats = sorted.map(([,s]) => s.max_latency);
+  const kbs     = sorted.map(([,s]) => +(s.bytes_sent / 1024).toFixed(1));
+  const slaOk   = sorted.map(([,s]) => s.sla_ok ? 100 : Math.max(0, 100 - (s.avg_latency / s.sla_target - 1) * 100));
+  const slaBad  = slaOk.map(v => 100 - v);
+
+  updateChart(charts.latency, labels, [{ data: avgLats, backgroundColor: colors }]);
+  updateChart(charts.latencyRange, labels, [
+    { label: "Min", data: minLats, backgroundColor: "#1e1e1e" },
+    { label: "Avg", data: avgLats, backgroundColor: "#777" },
+    { label: "Max", data: maxLats, backgroundColor: "#ccc" },
+  ]);
+  updateChart(charts.throughput, labels, [{ data: kbs, backgroundColor: colors }]);
+  updateChart(charts.sla, sorted.map(([cls]) => cls), [
+    { label: "SLA Met (%)",    data: slaOk,  backgroundColor: "#cccccc" },
+    { label: "Violated (%)",   data: slaBad, backgroundColor: "#2a2a2a" },
+  ]);
+
+  // Timeline scatter
+  const timelineDatasets = {};
+  timeline.forEach(pt => {
+    if (!timelineDatasets[pt.class]) {
+      timelineDatasets[pt.class] = { label: pt.class, data: [],
+        backgroundColor: CLASS_COLORS[pt.class] || "#888",
+        pointRadius: 3, pointBorderColor: "#000", pointBorderWidth: 0.5 };
+    }
+    timelineDatasets[pt.class].data.push({ x: pt.time, y: pt.latency_ms });
+  });
+  charts.timeline.data.datasets = Object.values(timelineDatasets);
+  charts.timeline.update();
+
+  // Table
+  const tbody = document.getElementById("statsBody");
+  tbody.innerHTML = sorted.map(([cls, s]) => {
+    const color = CLASS_COLORS[cls] || "#888";
+    const slaIcon = s.sla_ok ? '<span class="sla-ok">✓ Met</span>' : '<span class="sla-bad">✗ Fail</span>';
+    const icon = CLASS_ICONS[cls] || "●";
+    return `<tr>
+      <td><span class="pri-dot" style="background:${color}"></span>${icon} ${cls}</td>
+      <td>P${s.priority}</td><td>${s.dscp}</td>
+      <td>${s.sent.toLocaleString()}</td>
+      <td>${s.dropped.toLocaleString()}</td>
+      <td>${s.avg_latency.toFixed(1)}</td>
+      <td>${s.min_latency.toFixed(1)}</td>
+      <td>${s.max_latency.toFixed(1)}</td>
+      <td>${(s.bytes_sent/1024).toFixed(1)}</td>
+      <td>${slaIcon}</td>
+    </tr>`;
+  }).join("");
+
+  document.getElementById("kpiGrid").classList.add("fade-in");
+}
+
+function updateChart(chart, labels, datasets) {
+  chart.data.labels = labels;
+  chart.data.datasets = datasets.map((d, i) => ({
+    ...chart.data.datasets[i], ...d,
+    borderColor: "#000000", borderWidth: 1,
+  }));
+  chart.update();
+}
+
+// ── TABS ───────────────────────────────────
+function switchTab(name, btn) {
+  document.querySelectorAll(".tab-panel").forEach(p => p.classList.remove("active"));
+  document.querySelectorAll(".tab-btn").forEach(b => b.classList.remove("active"));
+  document.getElementById("tab-" + name).classList.add("active");
+  btn.classList.add("active");
+}
+</script>
+</body>
+</html>
